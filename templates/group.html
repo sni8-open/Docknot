@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h3 class="mb-0">{{ group.name }}</h3>
+  <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">← Back</a>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-4">
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h5 class="card-title">Upload PDF</h5>
+        <form method="post" action="{{ url_for('upload_pdf', group_id=group.id) }}" enctype="multipart/form-data">
+          <input class="form-control mb-2" type="file" name="pdf" accept="application/pdf"/>
+          <button class="btn btn-success w-100">Upload & Index</button>
+        </form>
+
+        <hr/>
+        <h6>Documents</h6>
+        {% if docs %}
+          <ul class="list-group">
+            {% for d in docs %}
+              <li class="list-group-item small d-flex justify-content-between align-items-start">
+                <div>
+                  <div class="fw-semibold">{{ d.filename }}</div>
+                  <div class="text-muted">{{ d.uploaded_at }}</div>
+                </div>
+                <form method="post" action="{{ url_for('delete_doc', group_id=group.id, doc_id=d.id) }}">
+                  <button class="btn btn-sm btn-outline-danger">Delete</button>
+                </form>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="text-muted small">No PDFs uploaded yet.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-body chat-window">
+        {% if messages %}
+          {% for m in messages %}
+            <div class="mb-3">
+              <div class="small text-muted">{{ m.created_at }}</div>
+              {% if m.role == "user" %}
+                <div class="p-2 rounded bg-primary text-white">
+                  <strong>You:</strong> {{ m.content }}
+                </div>
+              {% else %}
+                <div class="p-2 rounded bg-white border">
+                  <strong>Assistant:</strong> {{ m.content }}
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="text-muted">Upload PDFs and ask your first question.</p>
+        {% endif %}
+      </div>
+
+      <div class="card-footer bg-light">
+        <div class="input-group">
+          <input id="questionInput" class="form-control" placeholder="Ask a question about the PDFs..." />
+          <button id="sendBtn" class="btn btn-primary">Send</button>
+        </div>
+        <div id="citationsBox" class="mt-2 small"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const sendBtn = document.getElementById("sendBtn");
+const questionInput = document.getElementById("questionInput");
+const chatWindow = document.querySelector(".chat-window");
+const citationsBox = document.getElementById("citationsBox");
+
+function escapeHtml(s) {
+  return (s || "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;");
+}
+
+function appendUser(text) {
+  const el = document.createElement("div");
+  el.className = "mb-3";
+  el.innerHTML = `
+    <div class="p-2 rounded bg-primary text-white">
+      <strong>You:</strong> ${escapeHtml(text)}
+    </div>
+  `;
+  chatWindow.appendChild(el);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+function appendAssistantPlaceholder() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "mb-3";
+  wrapper.innerHTML = `
+    <div class="p-2 rounded bg-white border">
+      <strong>Assistant:</strong> <span class="streamText"></span>
+    </div>
+  `;
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+  return wrapper.querySelector(".streamText");
+}
+
+function renderCitations(citations) {
+  if (!citations || citations.length === 0) {
+    citationsBox.innerHTML = `<span class="text-muted">No citations returned.</span>`;
+    return;
+  }
+
+  // De-dupe same source/chunk pairs
+  const seen = new Set();
+  const cleaned = [];
+  for (const c of citations) {
+    const key = `${c.source}__${c.chunk_index}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      cleaned.push(c);
+    }
+  }
+
+  const items = cleaned.map((c) => {
+    return `<li>
+      <span class="fw-semibold">${escapeHtml(c.source || "unknown.pdf")}</span>
+      — chunk <span class="badge bg-secondary">${c.chunk_index}</span>
+    </li>`;
+  }).join("");
+
+  citationsBox.innerHTML = `
+    <details>
+      <summary class="fw-semibold">Citations (sources used)</summary>
+      <ul class="mt-2">${items}</ul>
+    </details>
+  `;
+}
+
+async function sendQuestion() {
+  const q = questionInput.value.trim();
+  if (!q) return;
+
+  questionInput.value = "";
+  citationsBox.innerHTML = "";
+
+  appendUser(q);
+  const streamTarget = appendAssistantPlaceholder();
+
+  sendBtn.disabled = true;
+  questionInput.disabled = true;
+
+  const resp = await fetch(`/groups/{{ group.id }}/chat_stream`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({question: q})
+  });
+
+  if (!resp.ok) {
+    streamTarget.textContent = `Error: ${resp.status}`;
+    sendBtn.disabled = false;
+    questionInput.disabled = false;
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const {value, done} = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, {stream:true});
+
+    // SSE events separated by \n\n
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop();
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith("data:")) continue;
+      const jsonStr = line.slice(5).trim();
+
+      let payload;
+      try { payload = JSON.parse(jsonStr); } catch(e) { continue; }
+
+      if (payload.type === "token") {
+        streamTarget.textContent += payload.value; // typewriter
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      } else if (payload.type === "citations") {
+        renderCitations(payload.value);
+      } else if (payload.type === "error") {
+        streamTarget.textContent += `\n\n[Error: ${payload.value}]`;
+      }
+    }
+  }
+
+  sendBtn.disabled = false;
+  questionInput.disabled = false;
+}
+
+sendBtn.addEventListener("click", sendQuestion);
+questionInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendQuestion();
+});
+</script>
+{% endblock %}

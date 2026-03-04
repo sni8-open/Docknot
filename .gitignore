@@ -1,0 +1,27 @@
+# Python virtual environment
+venv/
+
+# Uploaded files
+uploads/
+
+# Chroma vector database
+chroma_db/
+
+# SQLite database
+app.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VSCode settings
+.vscode/
