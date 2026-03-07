@@ -92,19 +92,25 @@ def upload_pdf(group_id: int):
 @app.post("/groups/<int:group_id>/docs/<int:doc_id>/delete")
 def delete_doc(group_id: int, doc_id: int):
     doc = get_document(doc_id)
+
     if not doc or doc["group_id"] != group_id:
         flash("Document not found.", "danger")
         return redirect(url_for("group_page", group_id=group_id))
 
     try:
+        # 1. delete vectors from Chroma
         deleted_chunks = delete_doc_vectors(group_id, doc_id)
 
-        path = Path(doc["filepath"])
-        if path.exists():
-            path.unlink()
+        # 2. delete physical PDF file
+        file_path = Path(doc["filepath"])
+        if file_path.exists():
+            file_path.unlink()
 
+        # 3. delete SQLite row
         delete_document_row(doc_id)
+
         flash(f"Deleted PDF and removed {deleted_chunks} vector chunks.", "success")
+
     except Exception as e:
         flash(f"Delete failed: {e}", "danger")
 

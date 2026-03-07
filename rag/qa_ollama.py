@@ -76,72 +76,76 @@ def build_messages(question: str, retrieved_docs: list[str], metas: list[dict], 
     # }
 
     system = {
-        "role": "system",
-        "content": """
-        You are a helpful assistant answering questions from uploaded PDFs.
+    "role": "system",
+    "content": """
+    You are a document-grounded question answering assistant.
 
-        You MUST answer ONLY using the provided context.
+    You must answer ONLY from the provided document context.
 
-        Formatting rules:
-        - Return answers in **markdown format**
-        - Use headings and emojis/icons
-        - Use bullet points
-        - Highlight key words in **bold**
+    ## Rules
+    - Stick strictly to the document.
+    - Do NOT use outside knowledge.
+    - Do NOT guess.
+    - Do NOT add information that is not explicitly supported by the context.
+    - If the answer is missing, unclear, or not explicitly stated in the context, reply exactly:
 
-        Answer format:
+    ❌ The answer was not found in the uploaded documents.
 
-        ## 📘 Definition
-        - Provide the definition.
+    ## Output format
+    Return the answer in markdown.
 
-        ## 🔍 Key Points
-        - Important concepts in bullet points.
+    Use this structure when possible:
 
-        ## 🧠 Explanation
-        - Simple explanation.
+    ## 📘 Answer
+    - Give the answer clearly.
 
-        ## 📝 Example
-        - Example if available.
+    ## 🔍 Key Points
+    - Use bullet points.
+    - Keep them short and faithful to the document.
 
-        If the answer is not found in the context, reply exactly:
+    ## 📝 Example
+    - Include an example only if it is supported by the document.
 
-        ❌ The answer was not found in the uploaded documents.
+    ## 📚 Source
+    - State that the answer is based on the uploaded document context.
 
-        Do NOT use outside knowledge.
-        """
+    Do not include any information that is not present in the context.
+    """
     }
 
     msgs = [system]
-    msgs.extend(history[-8:])  # memory window
+    msgs.extend([m for m in history[-8:] if m["role"] == "user"])
     msgs.append({
-            "role": "user",
-            "content": f"""
-        Use ONLY the following PDF context to answer.
+    "role": "user",
+    "content": f"""
+    Answer the question using ONLY the document context below.
 
-        Context:
-        {context}
+    ## Document Context
+    {context}
 
-        Question:
-        {question}
+    ## Question
+    {question}
 
-        Return the answer in markdown format using:
-        - headings
-        - bullet points
-        - bold keywords
-        - emojis/icons
-        """
-        })
+    ## Important
+    - Stick strictly to the document.
+    - Do not use outside knowledge.
+    - Do not guess.
+    - Return the answer in markdown format.
+    - If the answer is not explicitly supported by the document, reply exactly:
+
+    ❌ The answer was not found in the uploaded documents.
+    """
+    })
     return msgs
 
-def stream_answer_with_citations(
-    group_id: int,
-    question: str,
-    history: list[dict],
-    k: int = 25
-) -> Tuple[Iterable[str], list[dict]]:
+def stream_answer_with_citations(group_id: int, question: str, history: list[dict], k: int = 25):
     docs, metas = retrieve(group_id, question, k=k)
 
-    # metas always defined now
-    messages = build_messages(question, docs, metas, history)
+    if not docs or not metas:
+        def fallback():
+            yield "❌ The answer was not found in the uploaded documents."
+        return fallback(), []
 
+    messages = build_messages(question, docs, metas, history)
     token_stream = ollama_chat_stream(messages)
     return token_stream, metas

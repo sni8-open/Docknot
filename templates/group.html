@@ -44,14 +44,19 @@
         {% if messages %}
           {% for m in messages %}
             <div class="mb-3">
-              <div class="small text-muted">{{ m.created_at }}</div>
+              <!-- <div class="small text-muted">{{ m.created_at }}</div> -->
               {% if m.role == "user" %}
-                <div class="p-2 rounded bg-primary text-white">
-                  <strong>You:</strong> {{ m.content }}
+                <div class="chat-user">
+                  <div class="chat-bubble-user">
+                    {{ m.content }}
+                   
+                  </div>
                 </div>
+                                   <!-- <span class="badge badge-pill badge-secondary">{{ m.created_at }}</span> -->
+
               {% else %}
-                <div class="p-2 rounded bg-white border">
-                  <strong>Assistant:</strong> {{ m.content }}
+                <div class="p-2 rounded bg-white border assistant-message" data-markdown="{{ m.content | e }}">
+                  <div class="assistant-markdown"></div>
                 </div>
               {% endif %}
             </div>
@@ -90,8 +95,10 @@ function appendUser(text) {
   const el = document.createElement("div");
   el.className = "mb-3";
   el.innerHTML = `
-    <div class="p-2 rounded bg-primary text-white">
-      <strong>You:</strong> ${escapeHtml(text)}
+    <div class="chat-user">
+      <div class="chat-bubble-user">
+       ${escapeHtml(text)}
+      </div>
     </div>
   `;
   chatWindow.appendChild(el);
@@ -103,7 +110,7 @@ function appendAssistantPlaceholder() {
   wrapper.className = "mb-3";
   wrapper.innerHTML = `
     <div class="p-2 rounded bg-white border">
-      <strong>Assistant:</strong> <span class="streamText"></span>
+      <span class="streamText"></span>
     </div>
   `;
   chatWindow.appendChild(wrapper);
@@ -142,6 +149,18 @@ function renderCitations(citations) {
     </details>
   `;
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+  const assistantMessages = document.querySelectorAll(".assistant-message");
+
+  assistantMessages.forEach((msg) => {
+    const rawMarkdown = msg.getAttribute("data-markdown") || "";
+    const target = msg.querySelector(".assistant-markdown");
+    if (target) {
+      target.innerHTML = marked.parse(rawMarkdown);
+    }
+  });
+});
 
 async function sendQuestion() {
   const q = questionInput.value.trim();
