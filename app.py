@@ -130,7 +130,8 @@ def chat_stream(group_id: int):
 
     def event_stream():
         try:
-            token_stream, citations = stream_answer_with_citations(group_id, question, history, k=5)
+            token_stream, citations = stream_answer_with_citations(group_id, question, history, k=25)
+            citations = citations or []
 
             full_answer = []
             for tok in token_stream:
@@ -153,6 +154,41 @@ def chat_stream(group_id: int):
             yield f"data: {json.dumps({'type':'error','value':err})}\n\n"
 
     return Response(event_stream(), mimetype="text/event-stream")
+
+@app.get("/groups/<int:group_id>/debug_vectors")
+def debug_vectors(group_id: int):
+    from rag.chroma_store import get_collection
+    col = get_collection(group_id)
+    data = col.get(include=["ids", "documents", "metadatas"])
+    n = len(data.get("ids", []))
+    sample = []
+    for i in range(min(3, n)):
+        sample.append({
+            "id": data["ids"][i],
+            "meta": data["metadatas"][i],
+            "doc_preview": (data["documents"][i] or "")[:300]
+        })
+    return {"count": n, "sample": sample}
+
+@app.get("/groups/<int:group_id>/debug_count")
+def debug_count(group_id: int):
+    from rag.chroma_store import get_collection
+    col = get_collection(group_id)
+    ids = col.get().get("ids", [])
+    return {"group_id": group_id, "vector_count": len(ids)}
+
+@app.get("/groups/<int:group_id>/debug_find")
+def debug_find(group_id: int):
+    from rag.chroma_store import get_collection
+    col = get_collection(group_id)
+    data = col.get(include=["documents", "metadatas"])
+    hits = []
+    for d, m in zip(data.get("documents", []), data.get("metadatas", [])):
+        if d and "sample space" in d.lower():
+            hits.append({"meta": m, "preview": d[:300]})
+            if len(hits) >= 5:
+                break
+    return {"hits": hits, "hit_count": len(hits)}
 
 if __name__ == "__main__":
     app.run(debug=True)

@@ -72,6 +72,7 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 const sendBtn = document.getElementById("sendBtn");
 const questionInput = document.getElementById("questionInput");
@@ -172,34 +173,41 @@ async function sendQuestion() {
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
+  let fullAssistantText = "";
+
   while (true) {
     const {value, done} = await reader.read();
     if (done) break;
 
     buffer += decoder.decode(value, {stream:true});
-
-    // SSE events separated by \n\n
     const parts = buffer.split("\n\n");
     buffer = parts.pop();
 
     for (const part of parts) {
+
       const line = part.trim();
       if (!line.startsWith("data:")) continue;
-      const jsonStr = line.slice(5).trim();
 
-      let payload;
-      try { payload = JSON.parse(jsonStr); } catch(e) { continue; }
+      const payload = JSON.parse(line.slice(5));
 
       if (payload.type === "token") {
-        streamTarget.textContent += payload.value; // typewriter
+
+        fullAssistantText += payload.value;
+
+        // show raw text during typing
+        streamTarget.textContent = fullAssistantText;
+
         chatWindow.scrollTop = chatWindow.scrollHeight;
-      } else if (payload.type === "citations") {
+      }
+
+      else if (payload.type === "citations") {
         renderCitations(payload.value);
-      } else if (payload.type === "error") {
-        streamTarget.textContent += `\n\n[Error: ${payload.value}]`;
       }
     }
   }
+
+  streamTarget.innerHTML = marked.parse(fullAssistantText);
+
 
   sendBtn.disabled = false;
   questionInput.disabled = false;
