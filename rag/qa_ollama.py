@@ -1,151 +1,121 @@
 from typing import Iterable, Tuple
-from rag.chroma_store import get_collection
+
 from rag.ollama_client import ollama_embed, ollama_chat_stream
-from rag.keyword_fallback import keyword_fallback
+from rag.qdrant_store import get_client, collection_name_for_group
 
-# def retrieve(group_id: int, question: str, k: int = 5):
-#     """
-#     Always returns (docs, metas) even if collection is empty.
-#     """
-#     col = get_collection(group_id)
+from rag.embedder import embed_query
+from rag.reranker import rerank
 
-#     # If collection has no items, return empty
-#     try:
-#         peek = col.get(limit=1, include=["ids"])
-#         if not peek.get("ids"):
-#             return [], []
-#     except Exception:
-#         # If peek fails for any reason, still fail gracefully
-#         return [], []
+def retrieve(group_id: int, question: str, k: int = 40):
+    client = get_client()
+    collection_name = collection_name_for_group(group_id)
 
-#     q_emb = ollama_embed([question])[0]
+    q_emb = embed_query(question)
 
-#     print("RETRIEVED METAS:", metas[:3])
-#     print("RETRIEVED DOC PREVIEW:", [d[:120] for d in docs[:3]])
+    results = client.search(
+        collection_name=collection_name,
+        query_vector=q_emb,
+        limit=k,
+        with_payload=True
+    )
 
-#     res = col.query(
-#         query_embeddings=[q_emb],
-#         n_results=k,
-#         include=["documents", "metadatas"]
-#     )
+    docs = []
+    metas = []
 
-#     docs = (res.get("documents") or [[]])[0] or []
-#     metas = (res.get("metadatas") or [[]])[0] or []
-#     return docs, metas
+    for r in results:
+        payload = r.payload or {}
+        docs.append(payload.get("text", ""))
+        metas.append({
+            "source": payload.get("source", ""),
+            "document_id": payload.get("document_id", -1),
+            "chunk_index": payload.get("chunk_index", -1),
+            "page_start": payload.get("page_start", -1),
+            "page_end": payload.get("page_end", -1),
+            "section_title": payload.get("section_title", ""),
+            "char_length": payload.get("char_length", 0),
+            "preview": payload.get("preview", ""),
+            "score": r.score,
+        })
 
-def retrieve(group_id: int, question: str, k: int = 25):
-    col = get_collection(group_id)
-
-    # Vector retrieval
-    q_emb = ollama_embed([question])[0]
-    res = col.query(query_embeddings=[q_emb], n_results=k, include=["documents", "metadatas"])
-    docs = (res.get("documents") or [[]])[0] or []
-    metas = (res.get("metadatas") or [[]])[0] or []
-
-    # If vector search didn't return good stuff, fallback to keyword scan
-    if len(docs) < 3:
-        # For your specific queries, these keywords are perfect
-        keywords = ["sample space", "event", "events", "probability"]
-        docs2, metas2 = keyword_fallback(col, keywords, limit=10)
-
-        # Merge fallback results (avoid empty)
-        if docs2:
-            docs = docs2 + docs
-            metas = metas2 + metas
-    
-    print("RETRIEVED SOURCES:", [(m.get("source"), m.get("chunk_index")) for m in metas[:5]], flush=True)
-    print("DOC PREVIEW:", [d[:120] for d in docs[:2]], flush=True)
+    docs, metas = rerank(question, docs, metas, top_k=8)
 
     return docs, metas
+
 
 def build_messages(question: str, retrieved_docs: list[str], metas: list[dict], history: list[dict]) -> list[dict]:
     blocks = []
     for d, m in zip(retrieved_docs, metas):
         blocks.append(
-            f"[Source: {m.get('source')} | Chunk: {m.get('chunk_index')}]\n{d}"
+            f"""
+DOCUMENT CHUNK
+Source: {m.get('source')}
+Chunk: {m.get('chunk_index')}
+Pages: {m.get('page_start')} - {m.get('page_end')}
+Section: {m.get('section_title')}
+Score: {m.get('score')}
+
+{d}
+"""
         )
 
-    context = "\n\n---\n\n".join(blocks) if blocks else "No relevant context found in uploaded PDFs."
-
-    # system = {
-    #     "role": "system",
-    #     "content": (
-    #         "You are a helpful assistant for answering questions from PDFs. "
-    #         "Use the provided context. If context is insufficient, say so clearly."
-    #     )
-    # }
+    context = "\n\n---\n\n".join(blocks) if blocks else ""
 
     system = {
-    "role": "system",
-    "content": """
-    You are a document-grounded question answering assistant.
+        "role": "system",
+        "content": """
+You are a document-grounded assistant.
 
-    You must answer ONLY from the provided document context.
+Answer using ONLY the provided document context.
 
-    ## Rules
-    - Stick strictly to the document.
-    - Do NOT use outside knowledge.
-    - Do NOT guess.
-    - Do NOT add information that is not explicitly supported by the context.
-    - If the answer is missing, unclear, or not explicitly stated in the context, reply exactly:
+Rules:
+- Do NOT use outside knowledge.
+- Do NOT guess.
+- If the answer is not explicitly supported by the context, reply exactly:
 
-    ❌ The answer was not found in the uploaded documents.
+❌ The answer was not found in the uploaded documents.
 
-    ## Output format
-    Return the answer in markdown.
-
-    Use this structure when possible:
-
-    ## 📘 Answer
-    - Give the answer clearly.
-
-    ## 🔍 Key Points
-    - Use bullet points.
-    - Keep them short and faithful to the document.
-
-    ## 📝 Example
-    - Include an example only if it is supported by the document.
-
-    ## 📚 Source
-    - State that the answer is based on the uploaded document context.
-
-    Do not include any information that is not present in the context.
-    """
+Return the answer in markdown.
+"""
     }
 
     msgs = [system]
-    msgs.extend([m for m in history[-8:] if m["role"] == "user"])
+    msgs.extend([m for m in history[-6:] if m.get("role") == "user"])
+
     msgs.append({
-    "role": "user",
-    "content": f"""
-    Answer the question using ONLY the document context below.
+        "role": "user",
+        "content": f"""
+Use ONLY the document chunks below to answer.
 
-    ## Document Context
-    {context}
+## Document Context
+{context}
 
-    ## Question
-    {question}
+## Question
+{question}
 
-    ## Important
-    - Stick strictly to the document.
-    - Do not use outside knowledge.
-    - Do not guess.
-    - Return the answer in markdown format.
-    - If the answer is not explicitly supported by the document, reply exactly:
-
-    ❌ The answer was not found in the uploaded documents.
-    """
+## Important
+- Stick strictly to the document.
+- Do not use outside knowledge.
+- Do not guess.
+- Return the answer in markdown.
+"""
     })
+
     return msgs
 
-def stream_answer_with_citations(group_id: int, question: str, history: list[dict], k: int = 25):
+
+def stream_answer_with_citations(
+    group_id: int,
+    question: str,
+    history: list[dict],
+    k: int = 20
+) -> Tuple[Iterable[str], list[dict], list[str]]:
     docs, metas = retrieve(group_id, question, k=k)
 
     if not docs or not metas:
         def fallback():
             yield "❌ The answer was not found in the uploaded documents."
-        return fallback(), []
+        return fallback(), [], []
 
     messages = build_messages(question, docs, metas, history)
     token_stream = ollama_chat_stream(messages)
-    return token_stream, metas
+    return token_stream, metas, docs

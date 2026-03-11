@@ -13,6 +13,11 @@ from rag.ingest import ingest_pdf_to_group
 from rag.ollama_client import ollama_embed
 from rag.delete_vectors import delete_doc_vectors
 from rag.qa_ollama import stream_answer_with_citations
+from rag.embedder import embed_documents
+
+from pathlib import Path
+from db.models import get_document, delete_document_row
+from rag.delete_vectors import delete_doc_vectors
 
 load_dotenv()
 
@@ -81,7 +86,7 @@ def upload_pdf(group_id: int):
             document_id=doc_id,
             original_filename=f.filename,
             pdf_path=save_path,
-            embed_fn=ollama_embed
+            embed_documents=embed_documents
         )
         flash(f"Uploaded & indexed {f.filename} ({n_chunks} chunks).", "success")
     except Exception as e:
@@ -97,22 +102,32 @@ def delete_doc(group_id: int, doc_id: int):
         flash("Document not found.", "danger")
         return redirect(url_for("group_page", group_id=group_id))
 
-    try:
-        # 1. delete vectors from Chroma
-        deleted_chunks = delete_doc_vectors(group_id, doc_id)
+    deleted_chunks = 0
+    vector_error = None
 
-        # 2. delete physical PDF file
+    try:
+        deleted_chunks = delete_doc_vectors(group_id, doc_id)
+    except Exception as e:
+        vector_error = str(e)
+
+    try:
         file_path = Path(doc["filepath"])
         if file_path.exists():
             file_path.unlink()
-
-        # 3. delete SQLite row
-        delete_document_row(doc_id)
-
-        flash(f"Deleted PDF and removed {deleted_chunks} vector chunks.", "success")
-
     except Exception as e:
-        flash(f"Delete failed: {e}", "danger")
+        flash(f"File delete failed: {e}", "danger")
+        return redirect(url_for("group_page", group_id=group_id))
+
+    try:
+        delete_document_row(doc_id)
+    except Exception as e:
+        flash(f"Database cleanup failed: {e}", "danger")
+        return redirect(url_for("group_page", group_id=group_id))
+
+    if vector_error:
+        flash(f"PDF removed and DB cleaned. Vector delete skipped/failed: {vector_error}", "warning")
+    else:
+        flash(f"Deleted PDF and removed {deleted_chunks} vector chunks.", "success")
 
     return redirect(url_for("group_page", group_id=group_id))
 
@@ -136,9 +151,10 @@ def chat_stream(group_id: int):
 
     def event_stream():
         try:
-            token_stream, citations = stream_answer_with_citations(group_id, question, history, k=25)
+            token_stream, citations, chunks = stream_answer_with_citations(group_id, question, history, k=40)
             citations = citations or []
-
+            chunks = chunks or []
+            
             full_answer = []
             for tok in token_stream:
                 full_answer.append(tok)

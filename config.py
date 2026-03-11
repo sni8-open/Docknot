@@ -16,3 +16,13 @@ FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
 OLLAMA_LLM_MODEL = os.environ.get("OLLAMA_LLM_MODEL", "llama3:8b")
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+QDRANT_PATH = BASE_DIR / "qdrant_db"
+QDRANT_COLLECTION_PREFIX = "group_"
+QDRANT_PATH.mkdir(parents=True, exist_ok=True)
+
+EMBED_MODEL_NAME = "BAAI/bge-m3"
+RERANK_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
+
+EMBED_DEVICE = "cpu"   # change to "cuda" if you have GPU
+RERANK_DEVICE = "cpu"
